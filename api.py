@@ -573,7 +573,6 @@ class Text2Image:
         else:
             images = self.pipe(prompt, negative_prompt=n_prompt).images
             
-        # NOTE: 处理之后的结果直接存储为了图片
         image_filename = os.path.join('image', f"{str(uuid.uuid4())[:8]}.png")
         
         output = images[0]
@@ -585,7 +584,6 @@ class Text2Image:
 
 
 class ConversationBot:
-    # NOTE: init进行准备工作，将工具和LLM等都准备好
     def __init__(self, load_dict):
         print(f"Initializing DiffusionGPT, load_dict={load_dict}")
         
@@ -593,7 +591,7 @@ class ConversationBot:
         # Load Basic Foundation Models
         # {"Text2Image": "cuda:0"}
         for class_name, device in load_dict.items():
-            # NOTE: 这里的操作其实就是初始化了Text2Image类, 并添加到models这个字典里
+            # NOTE: 这里的操作其实就是初始化了Text2Image类
             self.models[class_name] = globals()[class_name](device=device)
 
         # Load Template Foundation Models
@@ -614,7 +612,6 @@ class ConversationBot:
             for e in dir(instance):
                 if e.startswith('inference'):
                     func = getattr(instance, e)
-                    # NOTE: 使用langchain的agent来对生图功能进行一下封装
                     self.tools.append(Tool(name=func.name, description=func.description, func=func))
         self.llm = OpenAI(temperature=0)
         
@@ -626,7 +623,6 @@ class ConversationBot:
         place = "Enter text and press enter, or upload an image"
         label_clear = "Clear"
         
-        # NOTE: 以tool agent的方式调用生图
         self.agent = initialize_agent(
             self.tools,
             self.llm,
@@ -634,8 +630,6 @@ class ConversationBot:
             verbose=True,
             memory=self.memory,
             return_intermediate_steps=True,
-            # NOTE: 这些参数会拼接起来，拼接形式为PREFIX+tools.description+FORMAT_INSTRUCTIONS+SUFFIX,
-            # 生图的功能主要是由封装了Texxt2Image的tool提供
             agent_kwargs={'prefix': PREFIX, 'format_instructions': FORMAT_INSTRUCTIONS,
                           'suffix': SUFFIX},
             handle_parsing_errors="Check your output and make sure it conforms!" )
@@ -643,7 +637,6 @@ class ConversationBot:
 
     def run_text(self, text, state):
         self.agent.memory.buffer = cut_dialogue_history(self.agent.memory.buffer, keep_last_n_words=500)
-        # NOTE:调用langchain的AgentExector(继承了chain的call函数,所以可以像函数调用)执行
         res = self.agent({"input": text.strip()})
         res['output'] = res['output'].replace("\\", "/")
         response = re.sub('(image/[-\w]*.png)', lambda m: f'![](file={m.group(0)})*{m.group(0)}*', res['output'])
@@ -651,77 +644,77 @@ class ConversationBot:
         print(f"\nProcessed run_text, Input text: {text}\n")
         return state, state
 
+
+def api_middleware(app: FastAPI):
+    rich_available = False
+    try:
+        if os.environ.get('WEBUI_RICH_EXCEPTIONS', None) is not None:
+            import anyio  # importing just so it can be placed on silent list
+            import starlette  # importing just so it can be placed on silent list
+            from rich.console import Console
+            console = Console()
+            rich_available = True
+    except Exception:
+        pass
+
+from fastapi import APIRouter, Depends, FastAPI, Request, Response
+class DiffusionGPTApi:
+    def __init__(self, app: FastAPI, queue_lock: Lock):
+        self.router = APIRouter()
+        self.app = app
+        self.queue_lock = queue_lock
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument('--load', type=str, default="Text2Image_cuda:0")
+        self.args = parser.parse_args()
+        # NOTE: load_dict = {"Text2Image": "cuda:0"} default
+        self.load_dict = {e.split('_')[0].strip(): e.split('_')[1].strip() for e in self.args.load.split(',')}
+        def init_api(apikey):
+            os.environ['OPENAI_API_KEY'] = apikey
+            global bot
+            bot = ConversationBot(load_dict=self.load_dict)
+            bot.init_agent("English")
+            print('set new api key:', apikey)
+            return None
+
+        # NOTE: 直接给出了openai aikey用于调用GPT
+        init_api(apikey="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")
+
+        api_middleware(self.app)
+        self.add_api_route("/sdapi/v1/diffusiongpt", self.diffusiongptapi, methods=["POST"])
+
+    def add_api_route(self, path: str, endpoint, **kwargs):
+        return self.app.add_api_route(path, endpoint, **kwargs)
+
+    # FIXME: 这里之后需要修改为发送psot请求SD api
+    # 需要pydantic类型配合输入，但是这里的输入参数是不能确定的，要如何实现
+    def diffsuiongptapi(self):
+        def inference_warp(prompt):
+            prompt = prompt.strip()
+            global bot
+            state = []
+            _, state = bot.run_text(prompt, state)
+            
+            print('========>', str(state))
+            
+            pattern = r"\(file=(.*?)\)"
+            matches = re.findall(pattern,  str(state))
+
+            
+            if matches:
+                file_path = matches[0]
+                print(file_path)
+                
+            image = Image.open(file_path)
+            return image
+
+        #FIXME: 如何获取这个prompt呢, 这里需要改进
+        # 在DiffusionGPT中，只有prompt，但是在SD中，我们还可以修改参数，因此，传入的还包含了长宽等其他信息，
+        # 所以在DiffusionGPT的处理中需要将prompt部分取出来，然后在后续调用SD的时候在封装进去
+        prompt = None
+        image = inference_warp(prompt)
+        # return image
+
+
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--load', type=str, default="Text2Image_cuda:0")
-    args = parser.parse_args()
-    # NOTE: load_dict = {"Text2Image": "cuda:0"} default
-    load_dict = {e.split('_')[0].strip(): e.split('_')[1].strip() for e in args.load.split(',')}
-    
-    def init_api(apikey):
-        os.environ['OPENAI_API_KEY'] = apikey
-        global bot
-        # NOTE: 初始化一个对话机器人
-        bot = ConversationBot(load_dict=load_dict)
-        bot.init_agent("English")
-        print('set new api key:', apikey)
-        return None
 
-    # NOTE: 直接给出了openai aikey用于调用GPT
-    init_api(apikey="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")
-    def inference_warp(prompt):
-        prompt = prompt.strip()
-        global bot
-        state = []
-        #NOTE: 生图的入口
-        _, state = bot.run_text(prompt, state)
-        
-        print('========>', str(state))
-        
-        pattern = r"\(file=(.*?)\)"
-        matches = re.findall(pattern,  str(state))
-
-        
-        if matches:
-            file_path = matches[0]
-            print(file_path)
-        
-
-        image = Image.open(file_path)
-        return image
-
-    with gr.Blocks(css="#chatbot .overflow-y-auto{height:1000px}") as demo:
-        state = gr.State([])
-        with gr.Row():
-            with gr.Column():
-                apikey = gr.Textbox(label='apikey', value="")
-                prompt = gr.Textbox(label='Prompt')
-                run_button = gr.Button('Generate Image')
-
-            result = gr.Image(label="Generated Image")
-        
-        run_button.click(fn=inference_warp,
-                    inputs=prompt,
-                    outputs=result,)
-
-        apikey.change(fn=init_api, inputs=[apikey])
-                    
-
-        examples = [
-                ["a girl with dress and red hat."],
-                ["generate an image of a laughing woman, fashion magazine cover."],
-                ["a cat on the grass."],
-                ["create an illustration of a romantic couple sharing a tender moment under a starry sky."],
-                ["a robot cooking in the kitchen."]
-
-        ]
-        gr.Examples(examples=examples,
-                    inputs=prompt,
-                    outputs=result,
-                    fn=inference_warp,
-                    cache_examples=True,
-                    run_on_click=True
-                    )
-                    
-    demo.launch(server_name="0.0.0.0", server_port=7862)

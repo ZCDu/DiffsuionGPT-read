@@ -246,7 +246,9 @@ class Text2Image:
 
         self.llm = OpenAI(temperature=0)
 
+        # NOTE: 感觉就是对model_data_sd15.json的格式化, 并且分成了4个大类别
         if not os.path.exists('model_tree_tot_sd15.json'):
+            # NOTE: 这个json文件定义的是模型和相应的prompt, 但是没有进行分类
             with open('model_data_sd15.json', 'r') as f:
                 self.model_data_all = json.load(f)
                 
@@ -288,6 +290,7 @@ class Text2Image:
                 f.close()
                 
 
+        # NOTE: 从这两行看，确实是一个筛选的过程
         with open('model_tree_tot_sd15.json', 'r') as f:
             self.model_data = json.load(f)
 
@@ -296,12 +299,14 @@ class Text2Image:
             self.model_all_data = {model["model_name"]:model for model in self.model_all_data}
 
         # Advantage databases with human feedback
+        # NOTE: 这个应该是和下面那个是对应的，这里是为了方便进行向量检索
         with open('./VectorDB_HF/prompt_embed_st.pickle', 'rb') as f:
             self.pt_pairs = pickle.load(f)
 
         with open('./VectorDB_HF/prompt2scores.json', 'r') as f:
             self.prompt2scores = json.load(f)
 
+        # NOTE: 这里需要一个embedding模型
         self.st_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 
 
@@ -591,28 +596,34 @@ class ConversationBot:
         print(f"All the Available Functions: {self.models}")
 
         self.tools = []
+        # FIXME: 这里的values到底来自哪里
         for instance in self.models.values():
             for e in dir(instance):
                 if e.startswith('inference'):
                     func = getattr(instance, e)
                     self.tools.append(Tool(name=func.name, description=func.description, func=func))
+        # TODO: 这里换成本地LLM就完事了
         self.llm = OpenAI(temperature=0)
         
         self.memory = ConversationBufferMemory(memory_key="chat_history", output_key='output')
 
+    # NOTE: 初始化Agent，将不同的SD模型视为tools去调用
     def init_agent(self, lang):
         self.memory.clear() #clear previous history
         
         place = "Enter text and press enter, or upload an image"
         label_clear = "Clear"
         
+        # PERF: 那么这里完全就可以直接作为大模型调用的入口
+        # NOTE: 使用langchain中的agent方式来实现工具的调用
         self.agent = initialize_agent(
             self.tools,
             self.llm,
-            agent="conversational-react-description",
+            agent="conversational-react-description", # 使用的是ReAct COT结构
             verbose=True,
             memory=self.memory,
             return_intermediate_steps=True,
+            # NOTE: 定义的prompt将作为参数传递给LLM
             agent_kwargs={'prefix': PREFIX, 'format_instructions': FORMAT_INSTRUCTIONS,
                           'suffix': SUFFIX},
             handle_parsing_errors="Check your output and make sure it conforms!" )
@@ -634,8 +645,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--load', type=str, default="Text2Image_cuda:0")
     args = parser.parse_args()
+    # NOTE: load_dict = {"Text2Image": "cuda:0"} default
     load_dict = {e.split('_')[0].strip(): e.split('_')[1].strip() for e in args.load.split(',')}
 
+    # TODO: 这里也需要改，这人定义大模型交互
     def init_api(apikey):
         os.environ['OPENAI_API_KEY'] = apikey
         global bot
@@ -644,11 +657,13 @@ if __name__ == '__main__':
         print('set new api key:', apikey)
         return None
 
+    # NOTE: 好家伙，代码里直接给api key
     init_api(apikey="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")
     def inference_warp(prompt):
         prompt = prompt.strip()
         global bot
         state = []
+        # NOTE: 调用模型进行生成
         _, state = bot.run_text(prompt, state)
         
         print('========>', str(state))
