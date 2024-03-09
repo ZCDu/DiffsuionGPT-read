@@ -1,2 +1,2 @@
 # 执行流程
-DiffusionGPT-sdxl-app.py -> 
+DiffusionGPT-sdxl-app.py 

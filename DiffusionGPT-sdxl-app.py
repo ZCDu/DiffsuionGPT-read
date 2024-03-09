@@ -481,6 +481,8 @@ class Text2Image:
         return matched_name
 
 
+    # NOTE: 这个写法引入名称和description也太让人尴尬了哦
+    # 这是一个语法糖，如@func func1 = func(func1)
     @prompts(name="Generate Image From User Input Text", 
              description="always useful to generate an image from a user input text and save it to a file. "
                          "The input to this tool MUST be the whole user input text.")
@@ -613,6 +615,8 @@ class ConversationBot:
         for instance in self.models.values():
             for e in dir(instance):
                 if e.startswith('inference'):
+                    # PERF: 这里使得tool的推理调用的是inference函数
+                    # 这就符合langchain的示例了，因为那里修饰的是function
                     func = getattr(instance, e)
                     # NOTE: 使用langchain的agent来对生图功能进行一下封装
                     self.tools.append(Tool(name=func.name, description=func.description, func=func))
@@ -626,7 +630,9 @@ class ConversationBot:
         place = "Enter text and press enter, or upload an image"
         label_clear = "Clear"
         
-        # NOTE: 以tool agent的方式调用生图
+        # NOTE: 以tool agent的方式调用生图->langchain->agnet->initialize_agent
+        # 首先使用tools的description和agent_kwargs的参数拼接成prompt和LLM构建一个chain
+        # 然后在封装成为一个Agent(LLMchain, tool_name)
         self.agent = initialize_agent(
             self.tools,
             self.llm,
@@ -644,6 +650,7 @@ class ConversationBot:
     def run_text(self, text, state):
         self.agent.memory.buffer = cut_dialogue_history(self.agent.memory.buffer, keep_last_n_words=500)
         # NOTE:调用langchain的AgentExector(继承了chain的call函数,所以可以像函数调用)执行
+        # 最后调用了langchain.agents.agent.Agent plan执行
         res = self.agent({"input": text.strip()})
         res['output'] = res['output'].replace("\\", "/")
         response = re.sub('(image/[-\w]*.png)', lambda m: f'![](file={m.group(0)})*{m.group(0)}*', res['output'])
@@ -664,6 +671,7 @@ if __name__ == '__main__':
         global bot
         # NOTE: 初始化一个对话机器人
         bot = ConversationBot(load_dict=load_dict)
+        # NOTE: 调用langchain的agent模块构建了一个带有tool的agent
         bot.init_agent("English")
         print('set new api key:', apikey)
         return None
